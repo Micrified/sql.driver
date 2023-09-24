@@ -41,22 +41,20 @@ func DSN (unixSocket, username, password, database string) string {
 }
 
 // Init opens and validates the data source name
-func (d *Driver) Init (unixSocket, username, password, database string) error {
+func (d *Driver) Init (unixSocket, username, password, database string) (string, error) {
   dsn := DSN(unixSocket, username, password, database)
   db, err := sql.Open(MySQL, dsn)
   if nil != err {
-    return fmt.Errorf("Bad Open with DSN %s: %w", dsn, err)
-  } else {
-    fmt.Printf("Connecting with DSN: %s\n", dsn)
+    return dsn, fmt.Errorf("Bad Open with DSN %s: %w", dsn, err)
   }
   err = db.Ping()
   if nil != err {
-    return fmt.Errorf("Bad Ping with DSN %s: %w", dsn, err)
+    return dsn, fmt.Errorf("Bad Ping with DSN %s: %w", dsn, err)
   }
   d.context = context.Background()
   d.database = database
   d.sqlDB = db
-  return nil
+  return dsn, nil
 }
 
 // Stop closes the DB and prevents new queries 
@@ -130,7 +128,6 @@ func (d *Driver) IndexedPage (rTable, cTable, id string) (Page, error) {
     "SELECT a.id, a.title, a.subtitle, a.tag, b.created, b.updated, b.body " +
     "FROM %s AS a INNER JOIN %s AS b ON a.content_id = b.id " +
     "WHERE a.id = %s", rTable, cTable, id)
-    fmt.Printf("Query: %s\n", query)
   rows, err := d.sqlDB.Query(query)
   defer rows.Close()
   if nil != err {
@@ -208,6 +205,88 @@ func (d *Driver) InsertIndexedPage (rTable, cTable string, form Page) (Page, err
     Updated:  date_str,
     Filename: "",
   }, nil
+}
+
+func (d *Driver) UpdateIndexedPage (rTable, cTable string, form Page) (Page, error) {
+  
+  fail := func (err error) (Page, error) {
+    return Page{}, fmt.Errorf("Bad delete: %v", err)
+  }
+
+  query := fmt.Sprintf(
+    "UPDATE %s LEFT JOIN %s on %s.content_id = %s.id " +
+    "SET %s.title = ?, %s.subtitle = ?, %s.updated = ?, %s.body = ? " +
+    "WHERE %s.id = ?", rTable, cTable, rTable, cTable, rTable, rTable, cTable,
+     cTable, rTable);
+
+  // Reserve connection
+  c, err := d.sqlDB.Conn(d.context)
+  if nil != err {
+    return fail(err)
+  }
+  defer c.Close()
+
+  // Perform operation
+  now := time.Now()
+  result, err := c.ExecContext(d.context, query, form.Title, form.Subtitle,
+    now, form.Body, form.ID)
+  if nil != err {
+    return fail(err)
+  }
+
+  // Retrieve affected rows
+  rows, err := result.RowsAffected()
+  if nil != err {
+    return fail(err)
+  }
+  if 0 == rows {
+    return fail(fmt.Errorf("Expected at least 1 row affected, got 0"))
+  }
+
+  date_str := now.Format("2006-01-02")
+  return Page {
+    ID:       form.ID,
+    Title:    form.Title,
+    Subtitle: form.Subtitle,
+    Tag:      form.Tag,
+    Created:  form.Created,
+    Updated:  date_str,
+  }, nil
+}
+
+func (d *Driver) DeleteIndexedPage (rTable, cTable string, form Page) error {
+  
+  fail := func (err error) error {
+    return fmt.Errorf("Bad delete: %v", err)
+  }
+
+  query := fmt.Sprintf(
+    "DELETE %s, %s FROM %s INNER JOIN %s " + 
+    "ON %s.content_id = %s.id WHERE %s.id = %s", 
+    rTable, cTable, rTable, cTable, rTable, cTable, rTable, form.ID);
+
+  // Reserve connection
+  c, err := d.sqlDB.Conn(d.context)
+  if nil != err {
+    return fail(err)
+  }
+  defer c.Close()
+
+  // Perform operation
+  result, err := c.ExecContext(d.context, query)
+  if nil != err {
+    return fail(err)
+  }
+
+  // Retrieve affected rows
+  rows, err := result.RowsAffected()
+  if nil != err {
+    return fail(err)
+  }
+  if 2 != rows {
+    return fail(fmt.Errorf("Expected 2 rows to be affected, got %d\n", rows))
+  }
+  return nil
 }
 
 //func (p page) Created () time.Time {
