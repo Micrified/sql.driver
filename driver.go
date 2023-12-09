@@ -22,16 +22,28 @@ type Driver struct {
   sqlDB       *sql.DB
 }
 
-// Defines: Page structure
-type Page struct {
-  ID          string `json:"id"`
-  Title       string `json:"title"`
-  Subtitle    string `json:"subtitle"`
-  Tag         string `json:"tag"`
-  Created     string `json:"created"` 
-  Updated     string `json:"updated"` 
-  Filename    string `json:"filename"`
-  Body        string `json:"body"`
+// Defines: Interface for table lookup
+type Tables interface {
+  RecordTable() string
+  ContentTable() string
+}
+
+// Defines: Interface for a type which can be queried
+type Queryable interface {
+  QueryGetRows(z *Table) string
+  QueryGetRow(z *Table) string
+  QueryInsertContentRow(z *Table, timeStamp time.Time) string
+  QueryInsertRecordRow(z *Table, cID int) string
+  QueryUpdateRow(z *Table, timeStamp time.Time) string
+  QueryDeleteRow(z *Table) string
+}
+
+// Defines: Interface for a type which can be read from sql members
+type SQLType [T any] interface {
+  FromRowMeta(rows *sql.Row) (T, error)
+  FromRowFull(rows *sql.Row) (T, error)
+  FromNewRecord(timeStamp time.Time, rID int) T
+  FromUpdatedRecord(timeStamp time.Time) T
 }
 
 // DSN compiles data source name (DSN) from arguments for go-sql-driver
@@ -92,211 +104,158 @@ func (d *Driver) StaticPage (cTable, hTable, name string) ([]byte, error) {
   return buffer, nil
 }
 
-
-// IndexedPages returns all pages from the given indexed table
-// rTable (record table) ordered by creation date using the 
-// cTable (content table)
-func (d *Driver) IndexedPages (rTable, cTable string) ([]Page, error) {
-  query := fmt.Sprintf(
-    "SELECT a.id, a.title, a.subtitle, a.tag, b.created, b.updated " +
-    "FROM %s AS a INNER JOIN %s AS B " +
-    "ON a.content_id = b.id " +
-    "ORDER BY b.created", rTable, cTable)
-  pages := []Page{}
+// Rows returns a slice of rows from the specified database tables.
+// q: Queryable type
+// z: Pointer to type implementing Tables interface
+func (d *Driver) Rows [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) ([]T, error) {
+  t, ts, query := SQLType(*q), []T{}, q.QueryGetRows(z)
   rows, err := d.sqlDB.Query(query)
   defer rows.Close()
   if nil != err {
-    return pages, fmt.Errorf("Bad query %s: %w", query, err)
+    return ts, fmt.Errorf("Bad query %s: %w", query, err)
   }
   for rows.Next() {
-    var p Page
-    err = rows.Scan(&p.ID, &p.Title, &p.Subtitle, &p.Tag, &p.Created,
-      &p.Updated)
+    t, err = t.FromRowMeta(rows)
     if nil != err {
-      return pages, fmt.Errorf("Bad row scan: %w", err)
+      return ts, fmt.Errorf("Bad row scan: %w", err)
     }
-    pages = append(pages, p)
+    ts = append(ts, t)
   }
-  return pages, nil
+  return ts, nil
 }
 
-// IndexedPage returns the body of an indexed page from the given 
-// cTable (content table) using the given id
-func (d *Driver) IndexedPage (rTable, cTable, id string) (Page, error) {
-  var p Page;
-  query := fmt.Sprintf(
-    "SELECT a.id, a.title, a.subtitle, a.tag, b.created, b.updated, b.body " +
-    "FROM %s AS a INNER JOIN %s AS b ON a.content_id = b.id " +
-    "WHERE a.id = %s", rTable, cTable, id)
+// Row returns a row from the specified database tables.
+// q: Queryable type. Used here to provide key information to query
+// z: Pointer to type implementing the Tables interface
+func (d *Driver) Row [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) (T, error) {
+  t, query := SQLType(*q), q.QueryGetRow(z)
   rows, err := d.sqlDB.Query(query)
   defer rows.Close()
   if nil != err {
-    return p, fmt.Errorf("Bad query %s: %w", query, err)
+    return t, fmt.Errorf("Bad query %s: %w", query, err)
   }
-  fmt.Println("Scanning rows ...")
   if rows.Next() {
-    err = rows.Scan(&p.ID, &p.Title, &p.Subtitle, &p.Tag, &p.Created,
-      &p.Updated, &p.Body)
+    t, err = t.FromRowFull(rows)
   } else {
-    return p, fmt.Errorf("Bad query %s: no rows!", query)
+    return t, fmt.Errorf("Bad query %s: no such row!", query)
   }
   if nil != err {
-    return p, fmt.Errorf("Bad row scan: %w", err)
+    return t, fmt.Errorf("Bad row scan: %w", err)
   }
-  return p, nil
+  return t, nil
 }
 
-// InsertIndexedPage inserts the given Page form, and returns the new Page data
-func (d *Driver) InsertIndexedPage (rTable, cTable string, form Page) (Page, error) {
-  blog_id, content_id := int64(-1), int64(-1)
+// Insert inserts the given type into the tables, and returns the new type data
+// q: Queryable type. Used here to contain the data to be inserted
+// z: Pointer to type implementing the Tables interface
+func (d *Driver) Insert [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) (T, error) {
+  t, rID, cID, timeStamp := SQLType(*q), int64(-1), int64(-1), time.Now().UTC()
+
+  fail := func(err error) (T, error) {
+    return T{}, fmt.Errorf("Bad insert: %v", err)
+  }
+
+  // Prepare transaction
+  tx, err := d.sqlDB.BeginTx(d.context, nil)
+  if nil != err {
+    return fail(err)
+  }
+  defer tx.Rollback() // Rollback has no effect if transaction succeeds
   
-  fail := func(err error) (Page, error) {
-    return Page{}, fmt.Errorf("Bad insert: %v", err)
-  }
-
-  query := fmt.Sprintf("INSERT INTO %s (created,updated,body) VALUES (?,?,?)", cTable)
-
-  // Prepare transactions
-  t, err := d.sqlDB.BeginTx(d.context, nil)
-  if nil != err {
+  // Insert content; fail on bad res(ult)
+  res, err := tx.ExecContext(d.context, q.QueryInsertContentRow(z, timeStamp))
+  if nil != res {
     return fail(err)
   }
-  defer t.Rollback() // Rollback has no effect if transaction succeeds
 
-  // Perform insert
-  now := time.Now()
-  r, err := t.ExecContext(d.context, query, now, now, form.Body)
+  // Fetch last insert id (content)
+  cID, err = res.LastInsertId()
   if nil != err {
     return fail(err)
   }
 
-  // Get the content ID
-  content_id, err = r.LastInsertId()
+  // Insert record; fail on bad res(ult)
+  res, err := tx.ExecContext(d.context, q.QueryInsertRecordRow(z, cID))
+  if nil != res {
+    return fail(err)
+  }
+
+  // Fetch last insert id (record)
+  rID, err = res.LastInsertId()
   if nil != err {
     return fail(err)
   }
 
-  // Prepare secondary commit
-  query = fmt.Sprintf("INSERT INTO %s (title,subtitle,tag,content_id) VALUES (?,?,?,?)", rTable)
-  r, err = t.ExecContext(d.context, query, form.Title, form.Subtitle, form.Tag, content_id)
-  if nil != err {
+  // Commit transaction
+  if err = tx.Commit(); nil != err {
     return fail(err)
   }
 
-  // Get last insert ID
-  blog_id, err = r.LastInsertId()
-  if nil != err {
-    return fail(err)
-  }
-
-  // Commit the transaction
-  if err = t.Commit(); nil != err {
-    return fail(err)
-  }
-
-  // Return the Page
-  blog_id_str, date_str := strconv.FormatInt(blog_id, 10), now.Format("2006-01-02")
-  return Page {
-    ID:       blog_id_str,
-    Title:    form.Title,
-    Subtitle: form.Subtitle,
-    Tag:      form.Tag,
-    Created:  date_str,
-    Updated:  date_str,
-    Filename: "",
-  }, nil
+  // Return new type
+  return t.FromNewRecord(timeStamp, rID), nil
 }
 
-func (d *Driver) UpdateIndexedPage (rTable, cTable string, form Page) (Page, error) {
-  
-  fail := func (err error) (Page, error) {
-    return Page{}, fmt.Errorf("Bad delete: %v", err)
-  }
+// Updates the given type in the tables, and returns the updated type data
+// q: Queryable type. Used here to contain the data to be updated
+// z: Pointer to type implementing the Tables interface
+func (d *Driver) Update [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) (T, error) {
+  t, timeStamp := SQLType(*q), time.Now().UTC()
 
-  query := fmt.Sprintf(
-    "UPDATE %s LEFT JOIN %s on %s.content_id = %s.id " +
-    "SET %s.title = ?, %s.subtitle = ?, %s.updated = ?, %s.body = ? " +
-    "WHERE %s.id = ?", rTable, cTable, rTable, cTable, rTable, rTable, cTable,
-     cTable, rTable);
+  fail := func (err error) (T, error) {
+    return T{}, fmt.Errorf("Bad update: %v", err)
+  }
 
   // Reserve connection
-  c, err := d.sqlDB.Conn(d.context)
+  conn, err := d.sqlDB.Conn(d.context)
   if nil != err {
     return fail(err)
   }
-  defer c.Close()
+  defer conn.Close()
 
-  // Perform operation
-  now := time.Now()
-  result, err := c.ExecContext(d.context, query, form.Title, form.Subtitle,
-    now, form.Body, form.ID)
+  // Update tables
+  res, err := conn.ExecContext(d.context, q.QueryUpdateRow(z, timeStamp))
   if nil != err {
     return fail(err)
   }
 
-  // Retrieve affected rows
-  rows, err := result.RowsAffected()
+  // Verify rows affected
+  rows, err := res.RowsAffected()
   if nil != err {
     return fail(err)
   }
   if 0 == rows {
     return fail(fmt.Errorf("Expected at least 1 row affected, got 0"))
   }
-
-  date_str := now.Format("2006-01-02")
-  return Page {
-    ID:       form.ID,
-    Title:    form.Title,
-    Subtitle: form.Subtitle,
-    Tag:      form.Tag,
-    Created:  form.Created,
-    Updated:  date_str,
-  }, nil
+  return t.FromUpdatedRecord(timeStamp), nil
 }
 
-func (d *Driver) DeleteIndexedPage (rTable, cTable string, form Page) error {
-  
+func (d *Driver) Delete [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) error {
+
   fail := func (err error) error {
     return fmt.Errorf("Bad delete: %v", err)
   }
 
-  query := fmt.Sprintf(
-    "DELETE %s, %s FROM %s INNER JOIN %s " + 
-    "ON %s.content_id = %s.id WHERE %s.id = %s", 
-    rTable, cTable, rTable, cTable, rTable, cTable, rTable, form.ID);
-
   // Reserve connection
-  c, err := d.sqlDB.Conn(d.context)
-  if nil != err {
-    return fail(err)
-  }
-  defer c.Close()
-
-  // Perform operation
-  result, err := c.ExecContext(d.context, query)
+  conn, err := d.sqlDB.Conn(d.context)
   if nil != err {
     return fail(err)
   }
 
-  // Retrieve affected rows
-  rows, err := result.RowsAffected()
+  // Delete from tables
+  res, err := conn.ExecContext(d.context, q.QueryDeleteRow(z))
+  if nil != err {
+    return fail(err)
+  }
+
+  // Verify rows affected
+  rows, err := res.RowsAffected()
   if nil != err {
     return fail(err)
   }
   if 2 != rows {
-    return fail(fmt.Errorf("Expected 2 rows to be affected, got %d\n", rows))
+    return fail(fmt.Errorf("Expected 2 rows affected, got %d", rows))
   }
+
   return nil
 }
-
-//func (p page) Created () time.Time {
-//  t, err := time.Parse("2006-01-02", p.created)
-//  // TODO: Failover hard or return default time like
-//  //       time.Unix(0,0)
-//  if nil != err {
-//    return time.Unix(0,0)
-//    //panic(err.Error())
-//  }
-//  return t
-//}
 
