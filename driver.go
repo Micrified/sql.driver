@@ -4,7 +4,6 @@ import (
   "context"
   "database/sql"
   "fmt"
-  "strconv"
   "time"
   _ "github.com/go-sql-driver/mysql"
 )
@@ -30,19 +29,19 @@ type Tables interface {
 
 // Defines: Interface for a type which can be queried
 type Queryable interface {
-  QueryGetRows(z *Table) string
-  QueryGetRow(z *Table) string
-  QueryInsertContentRow(z *Table, timeStamp time.Time) string
-  QueryInsertRecordRow(z *Table, cID int) string
-  QueryUpdateRow(z *Table, timeStamp time.Time) string
-  QueryDeleteRow(z *Table) string
+  QueryGetRows(z Tables) string
+  QueryGetRow(z Tables) string
+  QueryInsertContentRow(z Tables, timeStamp time.Time) string
+  QueryInsertRecordRow(z Tables, cID int64) string
+  QueryUpdateRow(z Tables, timeStamp time.Time) string
+  QueryDeleteRow(z Tables) string
 }
 
 // Defines: Interface for a type which can be read from sql members
 type SQLType [T any] interface {
-  FromRowMeta(rows *sql.Row) (T, error)
-  FromRowFull(rows *sql.Row) (T, error)
-  FromNewRecord(timeStamp time.Time, rID int) T
+  FromRowMeta(rows *sql.Rows) (T, error)
+  FromRowFull(rows *sql.Rows) (T, error)
+  FromNewRecord(timeStamp time.Time, rID int64) T
   FromUpdatedRecord(timeStamp time.Time) T
 }
 
@@ -79,10 +78,12 @@ func (d *Driver) Stop () error {
   return nil
 }
 
-// StaticPage returns the content of a named page which is 
-// looked up in the page content table cTable using the
-// given hash table hTable
-func (d *Driver) StaticPage (cTable, hTable, name string) ([]byte, error) {
+// StaticPage returns the content of a page using its hashed name
+// name: Name of resource to lookup
+// z: Pointer to type implementing Tables interface
+func StaticPage (d *Driver, name string, z Tables) ([]byte, error) {
+  // TODO: Add hashtable to Tables type for more clarity
+  hTable, cTable := z.RecordTable(), z.ContentTable()
   query := fmt.Sprintf(
     "SELECT body FROM %s WHERE id = " +
     "(SELECT content_id FROM %s WHERE url_hash = unhex(md5(\"%s\")))",
@@ -105,10 +106,11 @@ func (d *Driver) StaticPage (cTable, hTable, name string) ([]byte, error) {
 }
 
 // Rows returns a slice of rows from the specified database tables.
-// q: Queryable type
+// d: Pointer to database driver
+// q: Pointer to queryable type
 // z: Pointer to type implementing Tables interface
-func (d *Driver) Rows [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) ([]T, error) {
-  t, ts, query := SQLType(*q), []T{}, q.QueryGetRows(z)
+func Rows [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables) ([]T, error) {
+  t, ts, query := *q, []T{}, q.QueryGetRows(z)
   rows, err := d.sqlDB.Query(query)
   defer rows.Close()
   if nil != err {
@@ -125,10 +127,11 @@ func (d *Driver) Rows [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables)
 }
 
 // Row returns a row from the specified database tables.
-// q: Queryable type. Used here to provide key information to query
+// d: Pointer to database driver
+// q: Pointer to queryable type. Used here to provide key information to query
 // z: Pointer to type implementing the Tables interface
-func (d *Driver) Row [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) (T, error) {
-  t, query := SQLType(*q), q.QueryGetRow(z)
+func Row [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables) (T, error) {
+  t, query := *q, q.QueryGetRow(z)
   rows, err := d.sqlDB.Query(query)
   defer rows.Close()
   if nil != err {
@@ -146,13 +149,14 @@ func (d *Driver) Row [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) 
 }
 
 // Insert inserts the given type into the tables, and returns the new type data
-// q: Queryable type. Used here to contain the data to be inserted
+// d: Pointer to database driver
+// q: Pointer to queryable type. Used here to contain the data to be inserted
 // z: Pointer to type implementing the Tables interface
-func (d *Driver) Insert [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) (T, error) {
-  t, rID, cID, timeStamp := SQLType(*q), int64(-1), int64(-1), time.Now().UTC()
+func Insert [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables) (T, error) {
+  t, rID, cID, timeStamp := *q, int64(-1), int64(-1), time.Now().UTC()
 
   fail := func(err error) (T, error) {
-    return T{}, fmt.Errorf("Bad insert: %v", err)
+    return t, fmt.Errorf("Bad insert: %v", err)
   }
 
   // Prepare transaction
@@ -175,7 +179,7 @@ func (d *Driver) Insert [T SQLType[T], P interface{*T;Queryable}] (q P, z *Table
   }
 
   // Insert record; fail on bad res(ult)
-  res, err := tx.ExecContext(d.context, q.QueryInsertRecordRow(z, cID))
+  res, err = tx.ExecContext(d.context, q.QueryInsertRecordRow(z, cID))
   if nil != res {
     return fail(err)
   }
@@ -196,13 +200,14 @@ func (d *Driver) Insert [T SQLType[T], P interface{*T;Queryable}] (q P, z *Table
 }
 
 // Updates the given type in the tables, and returns the updated type data
-// q: Queryable type. Used here to contain the data to be updated
+// d: Pointer to database driver
+// q: Pointer to queryable type. Used here to contain the data to be updated
 // z: Pointer to type implementing the Tables interface
-func (d *Driver) Update [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) (T, error) {
-  t, timeStamp := SQLType(*q), time.Now().UTC()
+func Update [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables) (T, error) {
+  t, timeStamp := *q, time.Now().UTC()
 
   fail := func (err error) (T, error) {
-    return T{}, fmt.Errorf("Bad update: %v", err)
+    return t, fmt.Errorf("Bad update: %v", err)
   }
 
   // Reserve connection
@@ -229,7 +234,11 @@ func (d *Driver) Update [T SQLType[T], P interface{*T;Queryable}] (q P, z *Table
   return t.FromUpdatedRecord(timeStamp), nil
 }
 
-func (d *Driver) Delete [T SQLType[T], P interface{*T;Queryable}] (q P, z *Tables) error {
+// Deletes the given type from the tables. Returns error if any
+// d: Pointer to database driver
+// q: Pointer to queryable type. Used here to contain the data to be updated
+// z: Pointer to type implementing the Tables interface
+func Delete [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables) error {
 
   fail := func (err error) error {
     return fmt.Errorf("Bad delete: %v", err)
