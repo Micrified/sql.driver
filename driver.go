@@ -167,8 +167,9 @@ func Insert [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables)
   defer tx.Rollback() // Rollback has no effect if transaction succeeds
   
   // Insert content; fail on bad res(ult)
+  fmt.Println(q.QueryInsertContentRow(z, timeStamp))
   res, err := tx.ExecContext(d.context, q.QueryInsertContentRow(z, timeStamp))
-  if nil != res {
+  if nil != err {
     return fail(err)
   }
 
@@ -179,8 +180,9 @@ func Insert [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables)
   }
 
   // Insert record; fail on bad res(ult)
+  fmt.Println(q.QueryInsertRecordRow(z, cID))
   res, err = tx.ExecContext(d.context, q.QueryInsertRecordRow(z, cID))
-  if nil != res {
+  if nil != err {
     return fail(err)
   }
 
