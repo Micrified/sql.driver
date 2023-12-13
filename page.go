@@ -38,7 +38,7 @@ func (p *Page) QueryGetRow(z Tables) string {
 func (p *Page) QueryInsertContentRow(z Tables, timeStamp time.Time) string {
   t, cTable := timeStamp.Format("2006-01-02 15:04:05"), z.ContentTable()
   q := "INSERT INTO %s (created,updated,body) VALUES ('%s','%s','%s')"
-  return fmt.Sprintf(q, cTable, t, t, p.Body)
+  return fmt.Sprintf(q, cTable, t, t, escapeSQL(p.Body))
 }
 
 func (p *Page) QueryInsertRecordRow(z Tables, cID int64) string {
@@ -50,12 +50,12 @@ func (p *Page) QueryInsertRecordRow(z Tables, cID int64) string {
 
 func (p *Page) QueryUpdateRow(z Tables, timeStamp time.Time) string {
   q := "UPDATE %s LEFT JOIN %s ON %s.content_id = %s.id " + 
-       "SET %s.title = '%s', %s.subtitle = '%s', %s.updated = '%s', %s.body = '%s'" +
-       "WHERE %s.id = %d"
+       "SET %s.title = '%s', %s.subtitle = '%s', %s.updated = '%s', %s.body = '%s' " +
+       "WHERE %s.id = %s"
   t := timeStamp.Format("2006-01-02 15:04:05")
   rTable, cTable := z.RecordTable(), z.ContentTable()
   return fmt.Sprintf(q, rTable, cTable, rTable, cTable, rTable, p.Title,
-    rTable, p.Subtitle, cTable, t, cTable, p.Body, rTable, p.ID)
+    rTable, p.Subtitle, cTable, t, cTable, escapeSQL(p.Body), rTable, p.ID)
 }
 
 func (p *Page) QueryDeleteRow(z Tables) string {

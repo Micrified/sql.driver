@@ -51,6 +51,20 @@ func DSN (unixSocket, username, password, database string) string {
     database)
 }
 
+// escapeSQL escapes single-quotes for SQL insertion queries which inline
+// the string content (TODO: this is probably bad practice and can be improved)
+func escapeSQL (s string) string {
+  b := []byte{}
+  for _, c := range []byte(s) {
+    if '\'' == c {
+      b = append(b, '\\')
+    }
+    b = append(b, c)
+  }
+  return string(b)
+}
+
+
 // Init opens and validates the data source name
 func (d *Driver) Init (unixSocket, username, password, database string) (string, error) {
   dsn := DSN(unixSocket, username, password, database)
@@ -220,6 +234,7 @@ func Update [T SQLType[T], P interface{*T;Queryable}] (d *Driver, q P, z Tables)
   defer conn.Close()
 
   // Update tables
+  fmt.Printf("Update query:\n%s\n\n", q.QueryUpdateRow(z, timeStamp))
   res, err := conn.ExecContext(d.context, q.QueryUpdateRow(z, timeStamp))
   if nil != err {
     return fail(err)

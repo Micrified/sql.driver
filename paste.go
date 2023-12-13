@@ -3,8 +3,8 @@ package driver
 import (
   "database/sql"
   "fmt"
-  "time"
   "strconv"
+  "time"
 )
 
 // Defines: Paste structure
@@ -15,6 +15,17 @@ type Paste struct {
   Created     string `json:"created"`
   Updated     string `json:"updated"`
   Body        string `json:"body"`
+}
+
+func escapeSQL (s string) string {
+  b := []byte{}
+  for _, c := range []byte(s) {
+    if '\'' == c {
+      b = append(b, '\\')
+    }
+    b = append(b, c)
+  }
+  return string(b)
 }
 
 func (p *Paste) QueryGetRows(z Tables) string {
@@ -37,7 +48,7 @@ func (p *Paste) QueryGetRow(z Tables) string {
 func (p *Paste) QueryInsertContentRow(z Tables, timeStamp time.Time) string {
   t, cTable := timeStamp.Format("2006-01-02 15:04:05"), z.ContentTable()
   q := "INSERT INTO %s (created,updated,body) VALUES ('%s','%s','%s')"
-  return fmt.Sprintf(q, cTable, t, t, p.Body)
+  return fmt.Sprintf(q, cTable, t, t, escapeSQL(p.Body))
 }
 
 func (p *Paste) QueryInsertRecordRow(z Tables, cID int64) string {
@@ -49,11 +60,12 @@ func (p *Paste) QueryInsertRecordRow(z Tables, cID int64) string {
 
 func (p *Paste) QueryUpdateRow(z Tables, timeStamp time.Time) string {
   rTable, cTable := z.RecordTable(), z.ContentTable()
+  t := timeStamp.Format("2006-01-02 15:04:05")
   q := "UPDATE %s LEFT JOIN %s ON %s.content_id = %s.id " + 
-       "SET %s.filename = ?, %s.filetype = ?, %s.updated = ?, %s.body = ? " +
-       "WHERE %s.id = ?"
-  return fmt.Sprintf(q, rTable, cTable, rTable, cTable, rTable, rTable, cTable,
-    cTable, rTable)
+       "SET %s.filename = '%s', %s.filetype = '%s', %s.updated = '%s', %s.body = \"%s\" " +
+       "WHERE %s.id = %s"
+  return fmt.Sprintf(q, rTable, cTable, rTable, cTable, rTable, p.Filename,
+    rTable, p.Filetype, cTable, t, cTable, escapeSQL(p.Body), rTable, p.ID)
 }
 func (p *Paste) QueryDeleteRow(z Tables) string {
   rTable, cTable := z.RecordTable(), z.ContentTable()
