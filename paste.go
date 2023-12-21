@@ -17,17 +17,6 @@ type Paste struct {
   Body        string `json:"body"`
 }
 
-func escapeSQL (s string) string {
-  b := []byte{}
-  for _, c := range []byte(s) {
-    if '\'' == c {
-      b = append(b, '\\')
-    }
-    b = append(b, c)
-  }
-  return string(b)
-}
-
 func (p *Paste) QueryGetRows(z Tables) string {
   rTable, cTable := z.RecordTable(), z.ContentTable()
   q := "SELECT a.id, a.filename, a.filetype, b.created, b.updated " + 

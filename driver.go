@@ -56,14 +56,19 @@ func DSN (unixSocket, username, password, database string) string {
 func escapeSQL (s string) string {
   b := []byte{}
   for _, c := range []byte(s) {
-    if '\'' == c {
+    switch c {
+    case '\\':
+      b = append(b, '\\')
+    case '\'':
       b = append(b, '\\')
     }
     b = append(b, c)
   }
+  fmt.Println("--------")
+  fmt.Println(string(b))
+  fmt.Println("-------")
   return string(b)
 }
-
 
 // Init opens and validates the data source name
 func (d *Driver) Init (unixSocket, username, password, database string) (string, error) {
