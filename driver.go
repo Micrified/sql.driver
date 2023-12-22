@@ -61,6 +61,8 @@ func escapeSQL (s string) string {
       b = append(b, '\\')
     case '\'':
       b = append(b, '\\')
+    case '"':
+      b = append(b, '\\')
     }
     b = append(b, c)
   }
